@@ -41,7 +41,16 @@
   {% if items %}<div class="item-grid">{% for item in items %}
     <a class="item-card" href="{{ url_for('item_detail', item_id=item.id) }}">
       <div class="item-image">
-        {% if item.image_filename %}<img loading="lazy" src="{{ url_for('static', filename='uploads/' + item.image_filename) }}" alt="{{ item.title }}">{% else %}<div class="image-placeholder"><span>{{ {'Electronics':'🎧','Documents':'📄','Wallets':'👛','Keys':'🔑','Bags':'🎒','Clothing':'🧥','Jewellery':'💍','Pets':'🐾','Other':'📦'}.get(item.category, '📦') }}</span><small>WAITING TO BE FOUND</small></div>{% endif %}
+        {% if item.image_url %}
+          <img loading="lazy" src="{{ item.image_url }}" alt="{{ item.title }}">
+          {% elif item.image_filename %}
+          <img loading="lazy" src="{{ url_for('static', filename='uploads/' + item.image_filename) }}" alt="{{ item.title }}">
+        {% else %}
+          <div class="image-placeholder">
+            <span>{{ {'Electronics':'🎧','Documents':'📄','Wallets':'👛','Keys':'🔑','Bags':'🎒','Clothing':'🧥','Jewellery':'💍','Pets':'🐾','Other':'📦'}.get(item.category, '📦') }}</span>
+            <small>WAITING TO BE FOUND</small>
+          </div>
+        {% endif %}
         <span class="type-pill {{ item.item_type }}">{% if item.item_type == 'lost' %}Looking for{% else %}Found{% endif %}</span><span class="image-star">✳</span>
       </div>
       <div class="item-info"><div class="item-meta"><span>{{ item.category }}</span><span>·</span><span>{{ item.created_at.strftime('%d %b') }}</span></div><h3>{{ item.title }}</h3><p>{{ item.description|truncate(100) }}</p><div class="item-bottom"><span>⌖ &nbsp;{{ item.location }}</span><span class="card-arrow">↗</span></div></div>

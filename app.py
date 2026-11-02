@@ -9,6 +9,8 @@ from werkzeug.utils import secure_filename
 from io import BytesIO
 from dotenv import load_dotenv
 from sqlalchemy.engine import make_url
+import cloudinary
+import cloudinary.uploader
 
 load_dotenv()
 
@@ -41,21 +43,36 @@ if ca_certificate:
 app.config["SQLALCHEMY_DATABASE_URI"] = url.render_as_string(
     hide_password=False
 )
-
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-only-change-this-secret-before-deploying")
+app.config["SECRET_KEY"] = os.getenv(
+    "SECRET_KEY",
+    "dev-only-change-this-secret-before-deploying"
+)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.getenv("COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
-app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
-    "DATABASE_URL", "mysql+pymysql://retrieve_user:change_me@localhost/retrieve_db"
+app.config["SESSION_COOKIE_SECURE"] = (
+    os.getenv("COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
 )
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+app.config["UPLOAD_FOLDER"] = os.path.join(
+    app.root_path, "static", "uploads"
+)
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
+
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
+os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 app.config["UPLOAD_FOLDER"] = os.path.join(app.root_path, "static", "uploads")
 app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    secure=True
+)
 
 db = SQLAlchemy(app)
 
@@ -77,6 +94,8 @@ class Item(db.Model):
     location = db.Column(db.String(180), nullable=False, index=True)
     item_date = db.Column(db.Date, nullable=True)
     image_filename = db.Column(db.String(255))
+    image_url = db.Column(db.String(2048), nullable=True)
+    image_public_id = db.Column(db.String(255), nullable=True)
     status = db.Column(db.String(20), nullable=False, default="open", index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
@@ -275,33 +294,61 @@ def report():
         if not title or not description or not location or item_type not in {"lost", "found"}:
             flash("Please complete all required fields.", "error")
             return render_template("report.html", categories=categories)
-        filename = None
+        image_url = None
+        image_public_id = None
+
         if upload and upload.filename:
+
             if not allowed_file(upload.filename):
                 flash("Image must be PNG, JPG, JPEG or WEBP.", "error")
                 return render_template("report.html", categories=categories)
-            original_name = secure_filename(upload.filename)
-            stem = os.path.splitext(original_name)[0][:60] or "retrieve-image"
-            filename = f"{stem}_{int(datetime.utcnow().timestamp())}.webp"
-            target = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+
             try:
                 from PIL import Image, ImageOps
+
                 image = Image.open(upload.stream)
                 image = ImageOps.exif_transpose(image).convert("RGB")
                 image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
-                image.save(target, "WEBP", quality=82, method=6, optimize=True)
-            except ImportError:
-                # Pillow is included in requirements; this fallback keeps uploads functional if it is missing.
-                upload.stream.seek(0)
-                filename = f"{stem}_{int(datetime.utcnow().timestamp())}{os.path.splitext(original_name)[1].lower()}"
-                target = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-                upload.save(target)
+
+                image_buffer = BytesIO()
+                image.save(
+                    image_buffer,
+                    format="WEBP",
+                    quality=82,
+                    method=6,
+                    optimize=True
+                )
+                image_buffer.seek(0)
+
+                result = cloudinary.uploader.upload(
+                    image_buffer,
+                    folder="retrieve/items",
+                    resource_type="image",
+                    format="webp"
+                )
+
+                image_url = result["secure_url"]
+                image_public_id = result["public_id"]
+
             except Exception:
-                flash("We couldn't read that image. Please choose a valid JPG, PNG or WEBP file.", "error")
-                return render_template("report.html", categories=categories), 400
+                app.logger.exception("Cloudinary image upload failed")
+                flash(
+                    "Image upload failed. Please try another image.",
+                    "error"
+                )
+                return render_template("report.html", categories=categories), 500
         item_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else None
-        item = Item(title=title, description=description, category=category, item_type=item_type,
-                    location=location, item_date=item_date, image_filename=filename, user_id=current_user().id)
+        item = Item(
+            title=title,
+            description=description,
+            category=category,
+            item_type=item_type,
+            location=location,
+            item_date=item_date,
+            image_url=image_url,
+            image_public_id=image_public_id,
+            user_id=current_user().id
+        )
         db.session.add(item)
         db.session.commit()
         find_matches_for(item)
